@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "start-voiceoasis"
+version = "0.1.0"
+description = ""
+authors = ["Pascal Berger <pascal.berger@helbling.ch>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+azure-cognitiveservices-speech = "^1.41.1"
+flask = "^3.1.0"
+requests = "^2.32.3"
+flask-sock = "^0.7.0"
+flask-cors = "^5.0.0"
+flasgger = "^0.9.7.1"
+openai = "^1.65.4"
+groq="*"
+python-dotenv="*"
+numpy = "^1.26.0"
+scipy = "^1.14.0"
+dotenv="*"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
