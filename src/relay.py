@@ -1,6 +1,7 @@
 import uuid
 import json
 import os
+from utils import *
 
 from flask import Flask, request, jsonify, send_from_directory
 import azure.cognitiveservices.speech as speechsdk
@@ -11,12 +12,15 @@ from flasgger import Swagger
 from groq import Groq
 from dotenv import load_dotenv
 import io
-
 import wave
 import numpy as np
 from datetime import datetime
-import groq
+from openai import OpenAI
 from pathlib import Path
+
+from memory_module.recommender import *
+from memory_module.db import *
+from memory_module.summarize import *
 
 # Import preprocessing functions
 from audio_processing.preprocess import (
@@ -26,21 +30,17 @@ from audio_processing.preprocess import (
     spectral_enhancement
 )
 
-from memory_module.summarize import summarize_conversation
-from memory_module.db import get_customer_profile, update_customer_data
-from memory_module.recommender import recommend
-
 load_dotenv()
-AZURE_SPEECH_KEY=os.environ.get("AZURE_SPEECH_KEY")
+AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
-client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Handle HTTP requests & responses
 app = Flask(__name__) 
 
 # Handle WebSocket connections for real-time bidirectional communication between client & server
 # This is used for sending speech-to-text results back to clients in real-time
-sock = Sock(app) 
+sock = Sock(app)
 
 # Enable Cross-Origin Resource Sharing (CORS) for the app 
 # This allows our API to be accessed from different domains/origins
@@ -54,6 +54,8 @@ swagger = Swagger(app)
 sessions = {}
 
 last_message = ""
+
+connections = []
 
 # Create a directory to store processed audio samples
 SAMPLES_DIR = Path("processed_samples")
@@ -78,20 +80,11 @@ def ensure_session_fields(session_data):
     return session_data
 
 def transcribe_whisper(audio_recording):
+    audio_file = io.BytesIO(audio_recording)
+    audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
     try:
-        # Check if input is a file path or raw audio data
-        if isinstance(audio_recording, str) and os.path.exists(audio_recording):
-            # Input is a file path
-            with open(audio_recording, 'rb') as f:
-                audio_file = io.BytesIO(f.read())
-                audio_file.name = os.path.basename(audio_recording)
-        else:
-            # Input is raw audio data
-            audio_file = io.BytesIO(audio_recording)
-            audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
-            
         transcription = client.audio.transcriptions.create(
-            model="whisper-large-v3",
+            model="whisper-1",
             file=audio_file,
             #language = ""  # specify Language explicitly
         )
@@ -293,16 +286,11 @@ def upload_audio_chunk(chat_session_id, session_id):
     # Process audio for noise reduction
     if processed_audio is not None:
         try:
-            # Keep track of if this is the first or last chunk
-            is_first_chunk = not sessions[session_id].get("processed_audio_path")
-            
             processed_audio = automatic_gain_control(processed_audio)
             processed_audio = adaptive_noise_reduction(processed_audio, 
-                                                   noise_profile=upload_audio_chunk.noise_profile)
+            noise_profile=upload_audio_chunk.noise_profile)
             upload_audio_chunk.noise_profile = adaptive_noise_reduction.noise_profile
             processed_audio = spectral_enhancement(processed_audio)
-            
-            # No silence buffer added to regular chunks to avoid choppiness
         except Exception as e:
             print(f"Error during audio processing: {str(e)}")
             # Fall back to original audio if processing fails
@@ -419,63 +407,24 @@ def close_session(chat_session_id, session_id):
     # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
         print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
-        
-        # Add a tail buffer to the final processed audio file to prevent voice cutoff
-        processed_audio_path = sessions[session_id].get("processed_audio_path")
-        if processed_audio_path:
-            try:
-                # Read the processed audio file
-                with wave.open(processed_audio_path, 'rb') as wf:
-                    params = wf.getparams()
-                    existing_audio = wf.readframes(wf.getnframes())
-                
-                # Add a 0.5 second silence buffer at the end
-                tail_buffer_size = int(0.5 * 16000)  # 500ms at 16kHz
-                tail_buffer = np.zeros(tail_buffer_size, dtype=np.int16).tobytes()
-                
-                # Write combined audio with tail buffer
-                with wave.open(processed_audio_path, 'wb') as wf:
-                    wf.setparams(params)
-                    wf.writeframes(existing_audio + tail_buffer)
-                    print(f"Added final tail buffer of {tail_buffer_size} samples to processed audio")
-            except Exception as e:
-                print(f"Error adding tail buffer: {str(e)}")
-        
         try:
-            # Use processed audio file if available, otherwise fall back to audio buffer
-            processed_audio_path = sessions[session_id].get("processed_audio_path")
-
-            # Use pick_relevant_speaker from diarizer.py to get the speaker who is talking to us
-            from diarizer import pick_relevant_speaker
-
-            if processed_audio_path and os.path.exists(processed_audio_path):
-                print(f"Using processed audio file for speaker diarization: {processed_audio_path}")
-                # Call pick_relevant_speaker with the processed audio path and session_id
-                relevant_speaker = pick_relevant_speaker(processed_audio_path, session_id)
-                
-                # Store the relevant speaker information in the session
-                if relevant_speaker:
-                    sessions[session_id]["relevant_speaker"] = relevant_speaker
-                    print(f"Relevant speaker identified and stored in session")
-                
-                # Get the websocket to send the transcription back to the client
-                ws = sessions[session_id].get("websocket")
-                if ws and relevant_speaker:
-                    # The pick_relevant_speaker function already sends the message via websocket
-                    # We don't need to send it again here
-                    print(f"Relevant speaker identified and message sent via websocket")
-            else:
-                print("Processed audio file not available, cannot perform speaker diarization")
+            text = transcribe_whisper(sessions[session_id]["audio_buffer"])
+            # send transcription
+            ws = sessions[session_id].get("websocket")
+            if ws:
+                message = {
+                    "event": "recognized",
+                    "text": text,
+                    "language": sessions[session_id]["language"]
+                }
+                ws.send(json.dumps(message))
         except Exception as e:
-            print(f"Error during speaker diarization: {str(e)}")
-
+            print(f"Error during transcription: {str(e)}")
+            # Continue with session closing even if transcription fails
     
     # Get file paths before removing session
     original_audio_path = sessions[session_id].get("original_audio_path")
     processed_audio_path = sessions[session_id].get("processed_audio_path")
-    
-    # Store the relevant speaker information if it was found
-    relevant_speaker_info = sessions[session_id].get("relevant_speaker")
     
     # Handle None values
     if original_audio_path is None:
@@ -491,18 +440,12 @@ def close_session(chat_session_id, session_id):
     # Remove from session store
     sessions.pop(session_id, None)
 
-    response = {
+    return jsonify({
         "status": "session_closed",
         "original_audio": original_audio,
         "processed_audio": processed_audio,
         "message": "Audio files can be accessed at /samples/{filename}"
-    }
-    
-    # Add relevant speaker information if available
-    if relevant_speaker_info:
-        response["relevant_speaker"] = relevant_speaker_info
-        
-    return jsonify(response)
+    })
 
 @sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
 def speech_socket(ws, chat_session_id, session_id):
@@ -551,6 +494,16 @@ def speech_socket(ws, chat_session_id, session_id):
         if msg is None:
             break
 
+@sock.route('/fws')
+def websocket(fws):
+    connections.append(fws)
+    try:
+        while True:
+            # Keep the connection open
+            fws.receive()
+    finally:
+        connections.remove(fws)
+        
 @app.route('/chats/<chat_session_id>/set-memories', methods=['POST'])
 def set_memories(chat_session_id):
     """
@@ -597,13 +550,12 @@ def set_memories(chat_session_id):
     # TODO preprocess data (chat history & system message)
     speaker_chats = [item for item in chat_history if item['type'] == 0]
     last_message = speaker_chats[-1]['text']
-    print(f"[SET MEMORIES] Last message is: {last_message}")
+    print_info(f"[SET MEMORIES] Last message is: {last_message}")
     customer_data = get_customer_profile('Ahmed')
     new_data = summarize_conversation(last_message, customer_data)
     update_customer_data('Ahmed', new_data)
 
     return jsonify({"success": "1"})
-
 
 @app.route('/chats/<chat_session_id>/get-memories', methods=['GET'])
 def get_memories(chat_session_id):
@@ -632,10 +584,22 @@ def get_memories(chat_session_id):
       404:
         description: Chat session not found.
     """
-    print(f"{chat_session_id}: replacing memories...")
+    print_info(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_customer_profile('Ahmed'))}"})
+    new_relevant_info = recommend(last_input=last_message, customer_data=get_customer_profile('Ahmed'))
+    
+    if connections is None or len(connections) == 0:
+        print_info(f'No connections found')
+    else:
+      for ws in connections[:]:
+            try:
+                ws.send(new_relevant_info)
+                print_info(f'THIS IS CUSTOMER DATA: {json.dumps(new_relevant_info)}')
+            except Exception:
+                connections.remove(ws)
+                
+    return jsonify(new_relevant_info)
 
 # Add an endpoint to retrieve the audio files
 @app.route("/samples/<filename>", methods=["GET"])
@@ -676,4 +640,4 @@ def get_audio_sample(filename):
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=8089)

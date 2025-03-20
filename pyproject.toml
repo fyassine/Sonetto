@@ -20,6 +20,8 @@ python-dotenv="*"
 numpy = "^1.26.0"
 scipy = "^1.14.0"
 dotenv="*"
+colorama = "^0.4.6"
+pymongo = "^4.11.3"
 
 
 [build-system]
