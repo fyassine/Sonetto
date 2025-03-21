@@ -172,7 +172,21 @@ def identify_user(face_image_base64=None, use_camera=False, tolerance=0.6):
         
         if not encodings_db:
             print("No registered faces found in the database")
-            # Return Ahmed as default user for compatibility
+            # Instead of returning Ahmed as default, let's create a new user
+            if use_camera:
+                # Generate a unique user ID
+                import hashlib
+                import time
+                timestamp = str(time.time())
+                user_id = f"user_{hashlib.md5(timestamp.encode()).hexdigest()[:8]}"
+                
+                # Attempt to register this new user
+                success = register_face(user_id, use_camera=True)
+                if success:
+                    print(f"Registered new user with ID: {user_id}")
+                    return True, user_id
+            
+            # If registration fails or we're not using the camera, return Ahmed as default
             return True, "Ahmed"
         
         # Get image either from webcam or from base64 string
@@ -204,32 +218,59 @@ def identify_user(face_image_base64=None, use_camera=False, tolerance=0.6):
         face_encodings = face_recognition.face_encodings(image_np, face_locations)
         
         if not face_encodings:
-            print("Could not compute face encodings for the image")
-            # Return Ahmed as default user if encodings failed
+            print("Could not compute face encodings")
             return True, "Ahmed"
         
-        # Compare with known faces
-        for user_id, known_encodings_list in encodings_db.items():
-            # Convert list back to numpy array
-            known_encodings = [np.array(encoding) for encoding in known_encodings_list]
-            
-            # Compare faces
-            for face_encoding in face_encodings:
-                matches = [face_recognition.compare_faces([known_encoding], face_encoding, tolerance=tolerance)[0] 
-                           for known_encoding in known_encodings]
-                
-                if any(matches):
-                    print(f"User {user_id} identified")
-                    return True, user_id
+        # Check if the face matches any known face
+        best_match = None
+        best_match_distance = float('inf')
         
-        print("No matching user found, using default user: Ahmed")
-        # Return Ahmed as default user if no match found
-        return True, "Ahmed"
-    
+        for user_id, known_encodings in encodings_db.items():
+            for known_encoding in known_encodings:
+                # Convert back to numpy array if needed
+                if isinstance(known_encoding, list):
+                    known_encoding = np.array(known_encoding)
+                
+                # Compare face encodings
+                for face_encoding in face_encodings:
+                    # Calculate face distance (lower is more similar)
+                    face_distance = face_recognition.face_distance([known_encoding], face_encoding)[0]
+                    
+                    if face_distance < tolerance and face_distance < best_match_distance:
+                        best_match = user_id
+                        best_match_distance = face_distance
+        
+        if best_match:
+            print(f"Identified user: {best_match} (distance: {best_match_distance:.4f})")
+            return True, best_match
+        else:
+            print("No matching user found, registering as new user")
+            # Generate a unique user ID
+            import hashlib
+            import time
+            timestamp = str(time.time())
+            user_id = f"user_{hashlib.md5(timestamp.encode()).hexdigest()[:8]}"
+            
+            # Register this new user with the first face encoding
+            encodings_list = [face_encodings[0].tolist()]
+            encodings_db[user_id] = encodings_list
+            _save_face_encodings(encodings_db)
+            
+            # Save face image for reference
+            user_image_path = KNOWN_FACES_DIR / f"{user_id}.jpg"
+            if use_camera:
+                # Convert back to BGR for OpenCV
+                img_to_save = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(str(user_image_path), img_to_save)
+            else:
+                Image.fromarray(image_np).save(user_image_path)
+            
+            print(f"Registered new user with ID: {user_id}")
+            return True, user_id
+            
     except Exception as e:
         print(f"Error during user identification: {str(e)}")
-        # Return Ahmed as default user if an error occurred
-        return True, "Ahmed"
+        return False, None
 
 def get_identified_user_profile(face_image_base64=None, image_path=None, use_camera=False):
     """Get user profile after identification.

@@ -117,6 +117,18 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     for speaker_id, texts in speaker_transcriptions.items():
         combined_text = " ".join(texts)
         
+        # Skip empty text
+        if not combined_text or combined_text.strip() == "":
+            print(f"Speaker {speaker_id} has empty text, skipping analysis")
+            speaker_entry = {
+                "speaker_id": speaker_id,
+                "text": combined_text,
+                "is_ordering_food": False,
+                "order_details": ""
+            }
+            diarized_text.append(speaker_entry)
+            continue
+        
         # Use Groq to analyze if this speaker is ordering food
         prompt = f"""Analyze this text and determine if the speaker is ordering food. 
         Return a JSON with two fields:
@@ -135,9 +147,17 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
             
             # Add robust JSON parsing with fallback
             try:
-                analysis = json.loads(completion.choices[0].message.content)
-            except json.JSONDecodeError:
-                print(f"Invalid JSON from Groq API for speaker {speaker_id}. Using default values.")
+                # First try to find JSON in the response if it's not a clean JSON
+                import re
+                content = completion.choices[0].message.content
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    analysis = json.loads(json_str)
+                else:
+                    analysis = json.loads(content)
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"Invalid JSON from Groq API for speaker {speaker_id}: {e}. Using default values.")
                 analysis = {"is_ordering_food": False, "order_details": ""}
             
             speaker_entry = {
@@ -164,7 +184,15 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
                 "order_details": ""
             })
     
-    # If no relevant speaker was found but we have speakers, use the first one
+    # If no relevant speaker was found but we have speakers with non-empty text, use the first one with non-empty text
+    if not relevant_speaker and diarized_text:
+        for speaker in diarized_text:
+            if speaker["text"] and speaker["text"].strip() != "":
+                relevant_speaker = speaker
+                print(f"No ordering speaker found, using speaker with non-empty text: {speaker['speaker_id']}")
+                break
+    
+    # If still no relevant speaker, use the first one regardless of text
     if not relevant_speaker and diarized_text:
         relevant_speaker = diarized_text[0]
         print(f"No speaker with non-empty text found, using first speaker: {relevant_speaker['speaker_id']}")

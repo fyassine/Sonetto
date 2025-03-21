@@ -416,6 +416,20 @@ def close_session(chat_session_id, session_id):
 
     # Ensure session has all required fields
     sessions[session_id] = ensure_session_fields(sessions[session_id])
+    
+    # Try to identify user with facial recognition
+    print("Attempting to identify user with facial recognition...")
+    try:
+        success, user_id = identify_user(use_camera=True)
+        if success:
+            print(f"Successfully identified user: {user_id}")
+            sessions[session_id]["identified_user"] = user_id
+        else:
+            print("Failed to identify user with facial recognition, using default user")
+            sessions[session_id]["identified_user"] = "Ahmed"
+    except Exception as e:
+        print(f"Error during facial recognition: {str(e)}")
+        sessions[session_id]["identified_user"] = "Ahmed"
         
     # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
@@ -471,23 +485,22 @@ def close_session(chat_session_id, session_id):
             print(f"Error during speaker diarization: {str(e)}")
 
     
-    # Get file paths before removing session
-    original_audio_path = sessions[session_id].get("original_audio_path")
-    processed_audio_path = sessions[session_id].get("processed_audio_path")
-    
     # Store the relevant speaker information if it was found
     relevant_speaker_info = sessions[session_id].get("relevant_speaker")
     
+    # Store the identified user if available
+    identified_user = sessions[session_id].get("identified_user")
+    
     # Handle None values
-    if original_audio_path is None:
+    if sessions[session_id].get("original_audio_path") is None:
         original_audio = ""
     else:
-        original_audio = os.path.basename(original_audio_path)
+        original_audio = os.path.basename(sessions[session_id].get("original_audio_path"))
         
-    if processed_audio_path is None:
+    if sessions[session_id].get("processed_audio_path") is None:
         processed_audio = ""
     else:
-        processed_audio = os.path.basename(processed_audio_path)
+        processed_audio = os.path.basename(sessions[session_id].get("processed_audio_path"))
     
     # Remove from session store
     sessions.pop(session_id, None)
@@ -502,6 +515,10 @@ def close_session(chat_session_id, session_id):
     # Add relevant speaker information if available
     if relevant_speaker_info:
         response["relevant_speaker"] = relevant_speaker_info
+    
+    # Add identified user information if available
+    if identified_user:
+        response["identified_user"] = identified_user
         
     return jsonify(response)
 
