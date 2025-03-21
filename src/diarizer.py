@@ -4,6 +4,8 @@ import json
 import time
 import azure.cognitiveservices.speech as speechsdk
 from flask import jsonify
+import requests  # Add this import for REST API calls
+import groq
 
 # Import will happen at runtime to avoid circular imports
 # from relay import sessions, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION
@@ -38,7 +40,7 @@ def process_audio_file(audio_file_path):
         return None
 
 def transcribe_all_speakers(audio_file_path):
-    """Transcribe audio and identify different speakers.
+    """Transcribe audio and identify different speakers using REST API.
     
     Args:
         audio_file_path: Path to the audio file to transcribe
@@ -51,75 +53,57 @@ def transcribe_all_speakers(audio_file_path):
     from relay import AZURE_SPEECH_KEY, AZURE_SPEECH_REGION
     
     try:
-        # Initialize Azure Speech config with appropriate settings
-        speech_config = speechsdk.SpeechConfig(subscription=AZURE_SPEECH_KEY, region=AZURE_SPEECH_REGION)
-        speech_config.speech_recognition_language = "en-US"  # Set recognition language
-        speech_config.request_word_level_timestamps()  # Request word timestamps for better accuracy
-        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "5000")
-        speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "5000")
-        print(f"Using Azure Speech Service with region: {AZURE_SPEECH_REGION}")
-        
-        # Create audio config from the audio file path
-        audio_config = speechsdk.audio.AudioConfig(filename=audio_file_path)
-        
-        # Create speech recognizer
-        recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
-        
         # Dictionary to store speaker-specific transcriptions
         speaker_transcriptions = {}
         
-        # Simple approach: use recognize_once() which is more reliable for short audio clips
-        print("Starting speech recognition...")
-        result = recognizer.recognize_once()
+        print("Using REST API for speech recognition...")
+        with open(audio_file_path, 'rb') as audio_file:
+            audio_data = audio_file.read()
+            print(f"Audio file size: {len(audio_data)} bytes")
         
-        # Process the result
-        if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-            text = result.text
-            print(f"Recognized: {text}")
-            
-            # For simplicity, assign all text to a single speaker
-            speaker_id = "speaker_1"
-            speaker_transcriptions[speaker_id] = [text]
-            
-        elif result.reason == speechsdk.ResultReason.NoMatch:
-            print(f"No speech could be recognized: {result.no_match_details.reason}")
-            if result.no_match_details.reason == speechsdk.NoMatchReason.InitialSilenceTimeout:
-                print("The recording started with silence, and the service timed out waiting for speech.")
-            elif result.no_match_details.reason == speechsdk.NoMatchReason.InitialBabbleTimeout:
-                print("The recording started with noise that wasn't recognized as speech.")
-            
-        elif result.reason == speechsdk.ResultReason.Canceled:
-            cancellation_details = result.cancellation_details
-            print(f"Speech Recognition canceled: {cancellation_details.reason}")
-            if cancellation_details.reason == speechsdk.CancellationReason.Error:
-                print(f"Error details: {cancellation_details.error_details}")
-                
-        # Alternative approach: try to use the speech-to-text REST API directly if the SDK approach fails
-        if not speaker_transcriptions:
+        # REST API endpoint and headers
+        endpoint = f"https://{AZURE_SPEECH_REGION}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
+        headers = {
+            "Ocp-Apim-Subscription-Key": AZURE_SPEECH_KEY,
+            "Content-Type": "audio/wav",
+            "Accept": "application/json"
+        }
+        params = {
+            "language": "en-US"
+        }
+        
+        # Send POST request to REST API
+        print(f"Sending request to Azure Speech API: {endpoint}")
+        response = requests.post(endpoint, headers=headers, params=params, data=audio_data)
+        print(f"Response status code: {response.status_code}")
+        
+        # Check if the request was successful
+        if response.status_code == 200:
             try:
-                # Fallback to a simpler approach if the first one failed
-                print("Trying alternative recognition approach...")
-                audio_input = speechsdk.AudioConfig(filename=audio_file_path)
-                speech_recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_input)
+                result = response.json()
+                print(f"Full API response: {result}")
                 
-                # Use a simple synchronous recognition
-                simple_result = speech_recognizer.recognize_once_async().get()
-                if simple_result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                    print(f"Alternative approach recognized: {simple_result.text}")
-                    speaker_transcriptions["speaker_1"] = [simple_result.text]
-            except Exception as e:
-                print(f"Alternative approach failed: {str(e)}")
-        
-        # If no speakers were detected, add a default one with empty text
-        if not speaker_transcriptions:
-            speaker_transcriptions["speaker_1"] = [""]
-            print("No speech detected, adding default empty speaker")
+                # Extract recognized text
+                if "DisplayText" in result and result["DisplayText"].strip():
+                    recognized_text = result["DisplayText"]
+                    print(f"REST API recognized: {recognized_text}")
+                    speaker_transcriptions["speaker_1"] = [recognized_text]
+                else:
+                    print("REST API returned empty or no recognized text.")
+                    # Use a placeholder message instead of empty string
+                    speaker_transcriptions["speaker_1"] = ["No speech detected"]
+            except json.JSONDecodeError:
+                print(f"Failed to parse JSON response: {response.text}")
+                speaker_transcriptions["speaker_1"] = ["Error parsing response"]
+        else:
+            print(f"API request failed with status code {response.status_code}: {response.text}")
+            speaker_transcriptions["speaker_1"] = [f"API Error: {response.status_code}"]
         
         return speaker_transcriptions
 
     except Exception as e:
         print(f"Error during speech recognition: {str(e)}")
-        # Return an empty dictionary instead of a Flask response
+        # Return a dictionary with an error message
         return {"speaker_1": [f"Error: {str(e)}"]}
 
 def pick_relevant_speaker(audio_file_path, session_id=None):
@@ -137,7 +121,9 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     from relay import sessions
     
     # Get speaker transcriptions using Azure Speech SDK
+    print(f"Starting transcription of audio file: {audio_file_path}")
     speaker_transcriptions = transcribe_all_speakers(audio_file_path)
+    print(f"Raw transcription results: {speaker_transcriptions}")
         
     # Format results and identify the relevant speaker
     diarized_text = []
@@ -146,23 +132,109 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     # Analyze each speaker's text to find the most relevant one
     for speaker_id, texts in speaker_transcriptions.items():
         combined_text = " ".join(texts)
+        print(f"Speaker {speaker_id} raw texts: {texts}")
+        print(f"Speaker {speaker_id} combined text: '{combined_text}'")
+        print(f"Is text empty? {not combined_text or combined_text.strip() == ''}")
         
-        # Create a speaker entry for this speaker
-        speaker_entry = {
-            "speaker_id": speaker_id,
-            "text": combined_text,
-        }
+        # Skip empty text
+        if not combined_text or combined_text.strip() == "":
+            print(f"Speaker {speaker_id} has empty text, skipping analysis")
+            speaker_entry = {
+                "speaker_id": speaker_id,
+                "text": combined_text,
+                "is_ordering_food": False,
+                "order_details": ""
+            }
+            diarized_text.append(speaker_entry)
+            continue
         
-        # Add this speaker to the diarized text list
-        diarized_text.append(speaker_entry)
-        print(f"Speaker {speaker_id}: {combined_text}")
+        # Use Groq to analyze if this speaker is ordering food
+        prompt = f"""Analyze this text and determine if the speaker is ordering food. 
+        Return a JSON with two fields:
+        - is_ordering_food (boolean): true if the speaker is clearly ordering food
+        - order_details (string): if is_ordering_food is true, extract the order details
         
-        # For now, we'll consider the first speaker with non-empty text as relevant
-        # This is a simple approach - in a real system, you might want more sophisticated logic
-        if not relevant_speaker and combined_text.strip():
-            relevant_speaker = speaker_entry
+        Text to analyze: {combined_text}"""
+        
+        try:
+            client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0.1,
+            )
+            
+            # Add robust JSON parsing with fallback
+            try:
+                # First try to find JSON in the response if it's not a clean JSON
+                import re
+                content = completion.choices[0].message.content
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    analysis = json.loads(json_str)
+                else:
+                    analysis = json.loads(content)
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"Invalid JSON from Groq API for speaker {speaker_id}: {e}. Using default values.")
+                analysis = {"is_ordering_food": False, "order_details": ""}
+            
+            speaker_entry = {
+                "speaker_id": speaker_id,
+                "text": combined_text,
+                "is_ordering_food": analysis.get("is_ordering_food", False),
+                "order_details": analysis.get("order_details", "")
+            }
+            
+            diarized_text.append(speaker_entry)
+            print(f"Speaker {speaker_id}: {speaker_entry}")
+            
+            if analysis.get("is_ordering_food", False):
+                relevant_speaker = speaker_entry
+                print(f"Found food ordering speaker: {speaker_id}")
+                break
+            
+        except Exception as e:
+            print(f"Error analyzing speaker {speaker_id}: {str(e)}")
+            diarized_text.append({
+                "speaker_id": speaker_id,
+                "text": combined_text,
+                "is_ordering_food": False,
+                "order_details": ""
+            })
     
-    # If no relevant speaker was found but we have speakers, use the first one
+    # If no relevant speaker was found but we have speakers with non-empty text, use the first one with non-empty text
+    if not relevant_speaker and diarized_text:
+        print(f"Looking for speakers with non-empty text among {len(diarized_text)} speakers")
+        for speaker in diarized_text:
+            print(f"Checking speaker {speaker['speaker_id']}, text: '{speaker['text']}'")
+            text = speaker['text']
+            
+            # Check if text exists, is not empty, and is not our placeholder
+            has_valid_text = (
+                bool(text) and 
+                text.strip() != "" and 
+                text != "No speech detected" and
+                not text.startswith("Error:") and
+                not text.startswith("API Error:")
+            )
+            
+            print(f"Text evaluation: has valid text? {has_valid_text}")
+            
+            if has_valid_text:
+                print(f"Speaker text: {speaker['text']}")
+                relevant_speaker = speaker
+                print(f"No ordering speaker found, using speaker with non-empty text: {speaker['speaker_id']}")
+                break
+        
+        # If we don't find any speaker with valid text, use the first one anyway
+        if not relevant_speaker:
+            print("No speakers with valid text were found, using first speaker anyway")
+            relevant_speaker = diarized_text[0]
+            print(f"Using speaker: {relevant_speaker['speaker_id']} with text: '{relevant_speaker['text']}'")
+            return relevant_speaker
+    
+    # If still no relevant speaker, use the first one regardless of text
     if not relevant_speaker and diarized_text:
         relevant_speaker = diarized_text[0]
         print(f"No speaker with non-empty text found, using first speaker: {relevant_speaker['speaker_id']}")
