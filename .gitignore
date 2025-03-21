@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# data
+processed_samples/
+**/profiles.json
+
 # Distribution / packaging
 .Python
 build/

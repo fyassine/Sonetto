@@ -7,7 +7,7 @@ import azure.cognitiveservices.speech as speechsdk
 from flask_sock import Sock
 from flask_cors import CORS
 from flasgger import Swagger
-
+from asgiref.wsgi import WsgiToAsgi
 from groq import Groq
 from dotenv import load_dotenv
 import io
@@ -26,6 +26,8 @@ from audio_processing.preprocess import (
     spectral_enhancement
 )
 
+from voice_id.diarizer import *
+
 from memory_module.summarize import summarize_conversation
 from memory_module.db import get_customer_profile, update_customer_data
 from memory_module.recommender import recommend
@@ -34,6 +36,11 @@ load_dotenv()
 AZURE_SPEECH_KEY=os.environ.get("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = "switzerlandnorth"
 client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
+
+# Initialize the voice identifier
+# Import here to avoid circular imports
+from voice_id.recognizer import create_voice_identifier, identify_user
+voice_identifier = create_voice_identifier(AZURE_SPEECH_KEY, AZURE_SPEECH_REGION)
 
 # Handle HTTP requests & responses
 app = Flask(__name__) 
@@ -213,7 +220,7 @@ def upload_audio_chunk(chat_session_id, session_id):
     
     # Get audio data from request
     audio_data = request.data
-    print(f"Received audio chunk: {len(audio_data)} bytes")
+    # print(f"Received audio chunk: {len(audio_data)} bytes")
     
     if len(audio_data) == 0:
         return jsonify({"error": "Empty audio data"}), 400
@@ -243,19 +250,19 @@ def upload_audio_chunk(chat_session_id, session_id):
             with wave.open(original_audio_path, 'rb') as wf:
                 params = wf.getparams()
                 existing_audio = wf.readframes(wf.getnframes())
-                print(f"Original audio: existing frames: {len(existing_audio)} bytes")
+                # print(f"Original audio: existing frames: {len(existing_audio)} bytes")
         except (FileNotFoundError, wave.Error):
             # If file doesn't exist or is empty, create a new one
             params = (1, 2, 16000, 0, 'NONE', 'not compressed')
-            print("Creating new original audio file")
+            # print("Creating new original audio file")
         
-        print(f"New audio chunk size: {len(audio_data)} bytes")
+        # print(f"New audio chunk size: {len(audio_data)} bytes")
         
         # Write combined audio data
         with wave.open(original_audio_path, 'wb') as wf:
             wf.setparams(params)
             combined_audio = existing_audio + audio_data
-            print(f"Combined audio size: {len(combined_audio)} bytes")
+            # print(f"Combined audio size: {len(combined_audio)} bytes")
             wf.writeframes(combined_audio)
     
     # Convert bytes to numpy array
@@ -276,18 +283,18 @@ def upload_audio_chunk(chat_session_id, session_id):
         if overlap_size > 0:
             overlap = upload_audio_chunk.prev_chunk[-overlap_size:]
             audio_normalized = np.concatenate([overlap, audio_normalized])
-            print(f"Added {overlap_size} samples of overlap from previous chunk")
+            # print(f"Added {overlap_size} samples of overlap from previous chunk")
     
     # Apply preprocessing pipeline
     has_speech, processed_audio = simple_vad(audio_normalized, threshold=0.015)
     
     # Always store the original audio data in the buffer
     if sessions[session_id]["audio_buffer"] is not None:
-        print(f"Existing audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
+        # print(f"Existing audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
         sessions[session_id]["audio_buffer"] = sessions[session_id]["audio_buffer"] + audio_data
-        print(f"Updated audio buffer size (original): {len(sessions[session_id]['audio_buffer'])} bytes")
+        # print(f"Updated audio buffer size (original): {len(sessions[session_id]['audio_buffer'])} bytes")
     else:
-        print(f"Initializing audio buffer with original audio: {len(audio_data)} bytes")
+        # print(f"Initializing audio buffer with original audio: {len(audio_data)} bytes")
         sessions[session_id]["audio_buffer"] = audio_data
     
     # Process audio for noise reduction
@@ -344,19 +351,19 @@ def upload_audio_chunk(chat_session_id, session_id):
                 with wave.open(processed_audio_path, 'rb') as wf:
                     params = wf.getparams()
                     existing_audio = wf.readframes(wf.getnframes())
-                    print(f"Processed audio: existing frames: {len(existing_audio)} bytes")
+                    # print(f"Processed audio: existing frames: {len(existing_audio)} bytes")
             except (FileNotFoundError, wave.Error):
                 # If file doesn't exist or is empty, create a new one
                 params = (1, 2, 16000, 0, 'NONE', 'not compressed')
-                print("Creating new processed audio file")
+                # print("Creating new processed audio file")
             
-            print(f"New processed audio chunk size: {len(processed_bytes)} bytes")
+            # print(f"New processed audio chunk size: {len(processed_bytes)} bytes")
             
             # Write combined audio data
             with wave.open(processed_audio_path, 'wb') as wf:
                 wf.setparams(params)
                 combined_audio = existing_audio + processed_bytes
-                print(f"Combined processed audio size: {len(combined_audio)} bytes")
+                # print(f"Combined processed audio size: {len(combined_audio)} bytes")
                 wf.writeframes(combined_audio)
     
     # Get file paths for response
@@ -374,7 +381,7 @@ def upload_audio_chunk(chat_session_id, session_id):
     })
 
 @app.route("/chats/<chat_session_id>/sessions/<session_id>", methods=["DELETE"])
-def close_session(chat_session_id, session_id):
+async def close_session(chat_session_id, session_id):
     """
     Close the session (stop recognition, close push stream, cleanup).
     
@@ -418,7 +425,7 @@ def close_session(chat_session_id, session_id):
         
     # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
-        print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
+        # print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
         
         # Add a tail buffer to the final processed audio file to prevent voice cutoff
         processed_audio_path = sessions[session_id].get("processed_audio_path")
@@ -437,7 +444,7 @@ def close_session(chat_session_id, session_id):
                 with wave.open(processed_audio_path, 'wb') as wf:
                     wf.setparams(params)
                     wf.writeframes(existing_audio + tail_buffer)
-                    print(f"Added final tail buffer of {tail_buffer_size} samples to processed audio")
+                    # print(f"Added final tail buffer of {tail_buffer_size} samples to processed audio")
             except Exception as e:
                 print(f"Error adding tail buffer: {str(e)}")
         
@@ -446,8 +453,6 @@ def close_session(chat_session_id, session_id):
             processed_audio_path = sessions[session_id].get("processed_audio_path")
 
             # Use pick_relevant_speaker from diarizer.py to get the speaker who is talking to us
-            from diarizer import pick_relevant_speaker
-
             if processed_audio_path and os.path.exists(processed_audio_path):
                 print(f"Using processed audio file for speaker diarization: {processed_audio_path}")
                 # Call pick_relevant_speaker with the processed audio path and session_id
@@ -457,6 +462,85 @@ def close_session(chat_session_id, session_id):
                 if relevant_speaker:
                     sessions[session_id]["relevant_speaker"] = relevant_speaker
                     print(f"Relevant speaker identified and stored in session")
+                
+                    # Get the transcribed text from the relevant speaker
+                    user_text = relevant_speaker.get("text", "")
+                    
+                    
+                    ############ User Identification ###############################
+                    # *Section*: Perform voice identification to see if this is a returning user
+                    try:
+                        user_id, confidence, message = await voice_identifier.identify_user(
+                            audio_file_path=processed_audio_path,
+                            user_text=user_text
+                        )
+                    
+                        # Define a confidence threshold for considering a match valid
+                        CONFIDENCE_THRESHOLD = 0.75
+                        
+                        if user_id and confidence > CONFIDENCE_THRESHOLD:
+                            # This is a returning user - get their data
+                            user_data = voice_identifier.get_user_data(user_id)
+                            
+                            if "name" in user_data:
+                                relevant_speaker["name"] = user_data["name"]
+                                
+                            # Optionally add previous text samples
+                            if "user_text_samples" in user_data:
+                                # Only include up to last 3 interactions to avoid overloading
+                                relevant_speaker["previous_interactions"] = user_data["user_text_samples"][-3:]
+                            
+                            # Update the voice profile with this new audio for better future recognition
+                            voice_identifier.update_voice_profile(user_id, processed_audio_path)
+                            
+                            # Add user ID to the relevant speaker info
+                            relevant_speaker["user_id"] = user_id
+                            
+                            print(f"Returning user identified: {user_id} with confidence {confidence:.2f}")
+                        else:
+                            # This appears to be a new user - create a new profile
+                            print(f"New user detected, creating voice profile")
+                            
+                            # Generate a new user ID
+                            new_user_id = str(uuid.uuid4())
+                            
+                            # Check if we have a database manager module to store user data
+                            try:
+                                from memory_module.db import get_customer_profile, update_customer_data
+                                
+                                # Create a new customer profile in the database
+                                customer_data = get_customer_profile(new_user_id)
+                                
+                                # Add initial data about this user
+                                customer_data["first_interaction"] = datetime.now().isoformat()
+                                customer_data["voice_samples"] = [processed_audio_path]
+                                
+                                # Add text data if available
+                                if user_text:
+                                    customer_data["user_text_samples"] = [user_text]
+                                
+                                # Update the database with this new user
+                                update_customer_data(new_user_id, customer_data)
+                                
+                                # Create a voice profile for this user
+                                await voice_identifier.create_voice_profile(new_user_id, processed_audio_path, user_text)
+                                
+                                print(f"Created new user profile with ID: {new_user_id}")
+                                
+                                # Add user ID to the relevant speaker info
+                                relevant_speaker["user_id"] = new_user_id
+                                
+                            except ImportError:
+                                print("Database module not available, cannot create user profile")
+                            except Exception as e:
+                                print(f"Error creating user profile: {str(e)}")
+                    except Exception as e:
+                        print(f"Error during user identification: {str(e)}")
+                
+                
+                
+                
+                ############ SENDING MESSAGE TO CLIENT ###############################
                 
                 # Get the websocket to send the transcription back to the client
                 ws = sessions[session_id].get("websocket")
@@ -675,5 +759,17 @@ def get_audio_sample(filename):
     return send_from_directory(str(SAMPLES_DIR), filename, mimetype="audio/wav")
 
 if __name__ == "__main__":
-    # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    try:
+        # Try to use uvicorn for ASGI support (for async routes)
+        import uvicorn
+        
+        # Convert WSGI app to ASGI
+        asgi_app = WsgiToAsgi(app)
+        
+        print("Running with uvicorn ASGI server...")
+        uvicorn.run(asgi_app, host="0.0.0.0", port=5000)
+    except ImportError:
+        # Fall back to regular Flask development server (won't support async routes)
+        print("Warning: uvicorn not found, async routes won't work properly")
+        print("Install with: pip install uvicorn")
+        app.run(debug=True, host="0.0.0.0", port=5000)

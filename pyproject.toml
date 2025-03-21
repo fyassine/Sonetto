@@ -17,9 +17,11 @@ flasgger = "^0.9.7.1"
 openai = "^1.65.4"
 groq="*"
 python-dotenv="*"
-numpy = "^1.26.0"
+numpy = "^2.2.4"
 scipy = "^1.14.0"
 dotenv="*"
+pymongo = "^4.11.3"
+asgiref = "^3.8.1"
 
 
 [build-system]

@@ -147,20 +147,52 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     for speaker_id, texts in speaker_transcriptions.items():
         combined_text = " ".join(texts)
         
-        # Create a speaker entry for this speaker
-        speaker_entry = {
-            "speaker_id": speaker_id,
-            "text": combined_text,
-        }
+        # Use Groq to analyze if this speaker is ordering food
+        prompt = f"""Analyze this text and determine if the speaker is ordering food. 
+        Return a JSON with two fields:
+        - is_ordering_food (boolean): true if the speaker is clearly ordering food
+        - order_details (string): if is_ordering_food is true, extract the order details
         
-        # Add this speaker to the diarized text list
-        diarized_text.append(speaker_entry)
-        print(f"Speaker {speaker_id}: {combined_text}")
+        Text to analyze: {combined_text}"""
         
-        # For now, we'll consider the first speaker with non-empty text as relevant
-        # This is a simple approach - in a real system, you might want more sophisticated logic
-        if not relevant_speaker and combined_text.strip():
-            relevant_speaker = speaker_entry
+        try:
+            client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
+            completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0.1,
+            )
+            
+            # Add robust JSON parsing with fallback
+            try:
+                analysis = json.loads(completion.choices[0].message.content)
+            except json.JSONDecodeError:
+                print(f"Invalid JSON from Groq API for speaker {speaker_id}. Using default values.")
+                analysis = {"is_ordering_food": False, "order_details": ""}
+            
+            speaker_entry = {
+                "speaker_id": speaker_id,
+                "text": combined_text,
+                "is_ordering_food": analysis.get("is_ordering_food", False),
+                "order_details": analysis.get("order_details", "")
+            }
+            
+            diarized_text.append(speaker_entry)
+            print(f"Speaker {speaker_id}: {speaker_entry}")
+            
+            if analysis.get("is_ordering_food", False):
+                relevant_speaker = speaker_entry
+                print(f"Found food ordering speaker: {speaker_id}")
+                break
+            
+        except Exception as e:
+            print(f"Error analyzing speaker {speaker_id}: {str(e)}")
+            diarized_text.append({
+                "speaker_id": speaker_id,
+                "text": combined_text,
+                "is_ordering_food": False,
+                "order_details": ""
+            })
     
     # If no relevant speaker was found but we have speakers, use the first one
     if not relevant_speaker and diarized_text:

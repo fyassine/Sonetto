@@ -1,4 +1,3 @@
-
 <h1 align="center">
   <br>
     <br>
@@ -20,6 +19,7 @@
 * API interaction with Helbling VoiceBot Hemy
 * STT using ..., strictly focused on the main user
 * Memory handling to remember and inject past conversational details
+* Voice identification to recognize returning users
 
 ## Challenge Topics
 - Quality (50%)
@@ -90,6 +90,23 @@ Optional webapp url parameters:
 * Azure OpenAI endpoint: See https://starthack.eu/#/case-details?id=21, Case Description
 * Open source voice and transcription data: See for example https://github.com/google-deepmind/librispeech-long
 
+
+### Voice Identification System
+
+The application includes a voice identification system that:
+
+1. Identifies users based on their voice characteristics
+2. Creates new user profiles for unrecognized voices
+3. Retrieves and updates existing user profiles for returning users
+4. Stores voice samples and interaction history
+
+This system enhances the user experience by providing continuity across multiple interactions and enabling personalized responses based on past conversations.
+
+#### Requirements
+
+For voice identification to work, you need:
+- Azure Speech Services API key (set as AZURE_SPEECH_KEY environment variable)
+- MongoDB for user profile storage
 
 ### Generate swagger html docs
 Run `src/relay.py` and open [localhost:5000/apispec_1.json](http://localhost:5000/apispec_1.json). Download the content to `docs/apispec.json`.
