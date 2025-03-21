@@ -132,7 +132,13 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
                 model="llama-3.3-70b-versatile",
                 temperature=0.1,
             )
-            analysis = json.loads(completion.choices[0].message.content)
+            
+            # Add robust JSON parsing with fallback
+            try:
+                analysis = json.loads(completion.choices[0].message.content)
+            except json.JSONDecodeError:
+                print(f"Invalid JSON from Groq API for speaker {speaker_id}. Using default values.")
+                analysis = {"is_ordering_food": False, "order_details": ""}
             
             speaker_entry = {
                 "speaker_id": speaker_id,
@@ -145,7 +151,8 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
             print(f"Speaker {speaker_id}: {speaker_entry}")
             
             if analysis.get("is_ordering_food", False):
-                food_ordering_speaker = speaker_entry
+                relevant_speaker = speaker_entry
+                print(f"Found food ordering speaker: {speaker_id}")
                 break
             
         except Exception as e:
