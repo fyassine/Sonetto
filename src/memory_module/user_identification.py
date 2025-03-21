@@ -183,7 +183,6 @@ def identify_user(face_image_base64=None, use_camera=False, tolerance=0.6):
                 # Attempt to register this new user
                 success = register_face(user_id, use_camera=True)
                 if success:
-                    print(f"Registered new user with ID: {user_id}")
                     return True, user_id
             
             # If registration fails or we're not using the camera, return Ahmed as default
@@ -265,7 +264,6 @@ def identify_user(face_image_base64=None, use_camera=False, tolerance=0.6):
             else:
                 Image.fromarray(image_np).save(user_image_path)
             
-            print(f"Registered new user with ID: {user_id}")
             return True, user_id
             
     except Exception as e:
@@ -313,4 +311,4 @@ def get_identified_user_profile(face_image_base64=None, image_path=None, use_cam
     print(f"Identified user: {user_id}, retrieving profile...")
     
     # Get user profile from database
-    return get_customer_profile(user_id)
+    return user_id

@@ -60,6 +60,19 @@ last_message = ""
 SAMPLES_DIR = Path("processed_samples")
 SAMPLES_DIR.mkdir(exist_ok=True)
 
+USED_ID_PATH = "used_id.txt"
+
+def set_user_id(value):
+  with open(USED_ID_PATH, 'w') as f:
+    f.write(str(value))
+  
+def get_user_id():
+  try:
+    with open(USED_ID_PATH, 'r') as f:
+      return f.read().strip()
+  except FileNotFoundError:
+    return "DEFAULT"
+  
 def ensure_session_fields(session_data):
     """
     Ensure that a session has all the required fields.
@@ -162,6 +175,11 @@ def open_session(chat_session_id):
     
     print(f"DEBUG - Created session: {session_id}")
     print(f"DEBUG - Session object: {sessions[session_id]}")
+    
+    # Identify User
+    print("Identifying User ...")
+    set_user_id(get_identified_user_profile(use_camera=True))
+    print(f"I am now speaking with user {get_user_id()}")
 
     return jsonify({"session_id": session_id})
 
@@ -299,7 +317,7 @@ def upload_audio_chunk(chat_session_id, session_id):
             
             processed_audio = automatic_gain_control(processed_audio)
             processed_audio = adaptive_noise_reduction(processed_audio, 
-                                                   noise_profile=upload_audio_chunk.noise_profile)
+            noise_profile=upload_audio_chunk.noise_profile)
             upload_audio_chunk.noise_profile = adaptive_noise_reduction.noise_profile
             processed_audio = spectral_enhancement(processed_audio)
             
@@ -416,111 +434,49 @@ def close_session(chat_session_id, session_id):
 
     # Ensure session has all required fields
     sessions[session_id] = ensure_session_fields(sessions[session_id])
-    
-    # Try to identify user with facial recognition
-    print("Attempting to identify user with facial recognition...")
-    try:
-        success, user_id = identify_user(use_camera=True)
-        if success:
-            print(f"Successfully identified user: {user_id}")
-            sessions[session_id]["identified_user"] = user_id
-        else:
-            print("Failed to identify user with facial recognition, using default user")
-            sessions[session_id]["identified_user"] = "Ahmed"
-    except Exception as e:
-        print(f"Error during facial recognition: {str(e)}")
-        sessions[session_id]["identified_user"] = "Ahmed"
         
     # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
         print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
-        
-        # Add a tail buffer to the final processed audio file to prevent voice cutoff
-        processed_audio_path = sessions[session_id].get("processed_audio_path")
-        if processed_audio_path:
-            try:
-                # Read the processed audio file
-                with wave.open(processed_audio_path, 'rb') as wf:
-                    params = wf.getparams()
-                    existing_audio = wf.readframes(wf.getnframes())
-                
-                # Add a 0.5 second silence buffer at the end
-                tail_buffer_size = int(0.5 * 16000)  # 500ms at 16kHz
-                tail_buffer = np.zeros(tail_buffer_size, dtype=np.int16).tobytes()
-                
-                # Write combined audio with tail buffer
-                with wave.open(processed_audio_path, 'wb') as wf:
-                    wf.setparams(params)
-                    wf.writeframes(existing_audio + tail_buffer)
-                    print(f"Added final tail buffer of {tail_buffer_size} samples to processed audio")
-            except Exception as e:
-                print(f"Error adding tail buffer: {str(e)}")
-        
         try:
-            # Use processed audio file if available, otherwise fall back to audio buffer
-            processed_audio_path = sessions[session_id].get("processed_audio_path")
-
-            # Use pick_relevant_speaker from diarizer.py to get the speaker who is talking to us
-            from diarizer import pick_relevant_speaker
-
-            if processed_audio_path and os.path.exists(processed_audio_path):
-                print(f"Using processed audio file for speaker diarization: {processed_audio_path}")
-                # Call pick_relevant_speaker with the processed audio path and session_id
-                relevant_speaker = pick_relevant_speaker(processed_audio_path, session_id)
-                
-                # Store the relevant speaker information in the session
-                if relevant_speaker:
-                    sessions[session_id]["relevant_speaker"] = relevant_speaker
-                    print(f"Relevant speaker identified and stored in session")
-                
-                # Get the websocket to send the transcription back to the client
-                ws = sessions[session_id].get("websocket")
-                if ws and relevant_speaker:
-                    # The pick_relevant_speaker function already sends the message via websocket
-                    # We don't need to send it again here
-                    print(f"Relevant speaker identified and message sent via websocket")
-            else:
-                print("Processed audio file not available, cannot perform speaker diarization")
+            text = transcribe_whisper(sessions[session_id]["audio_buffer"])
+            # send transcription
+            ws = sessions[session_id].get("websocket")
+            if ws:
+                message = {
+                    "event": "recognized",
+                    "text": text,
+                    "language": sessions[session_id]["language"]
+                }
+                ws.send(json.dumps(message))
         except Exception as e:
-            print(f"Error during speaker diarization: {str(e)}")
-
+            print(f"Error during transcription: {str(e)}")
+            # Continue with session closing even if transcription fails
     
-    # Store the relevant speaker information if it was found
-    relevant_speaker_info = sessions[session_id].get("relevant_speaker")
-    
-    # Store the identified user if available
-    identified_user = sessions[session_id].get("identified_user")
+    # Get file paths before removing session
+    original_audio_path = sessions[session_id].get("original_audio_path")
+    processed_audio_path = sessions[session_id].get("processed_audio_path")
     
     # Handle None values
-    if sessions[session_id].get("original_audio_path") is None:
+    if original_audio_path is None:
         original_audio = ""
     else:
-        original_audio = os.path.basename(sessions[session_id].get("original_audio_path"))
+        original_audio = os.path.basename(original_audio_path)
         
-    if sessions[session_id].get("processed_audio_path") is None:
+    if processed_audio_path is None:
         processed_audio = ""
     else:
-        processed_audio = os.path.basename(sessions[session_id].get("processed_audio_path"))
+        processed_audio = os.path.basename(processed_audio_path)
     
     # Remove from session store
     sessions.pop(session_id, None)
 
-    response = {
+    return jsonify({
         "status": "session_closed",
         "original_audio": original_audio,
         "processed_audio": processed_audio,
         "message": "Audio files can be accessed at /samples/{filename}"
-    }
-    
-    # Add relevant speaker information if available
-    if relevant_speaker_info:
-        response["relevant_speaker"] = relevant_speaker_info
-    
-    # Add identified user information if available
-    if identified_user:
-        response["identified_user"] = identified_user
-        
-    return jsonify(response)
+    })
 
 @sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
 def speech_socket(ws, chat_session_id, session_id):
@@ -619,25 +575,13 @@ def set_memories(chat_session_id):
     
     # Use face recognition to identify the user instead of hardcoded 'Ahmed'
     print("Identifying user via face recognition...")
-    customer_data = get_identified_user_profile(use_camera=True)
+    customer_data = get_customer_profile(get_user_id())
     
     # Process the conversation and update customer data
     new_data = summarize_conversation(last_message, customer_data)
     
-    # From our implementation, get_identified_user_profile has already determined 
-    # the user ID and used it to query the database
-    # We need to identify the user again to get the ID for updating data
-    # But we'll add error handling to ensure we don't crash
-    try:
-        success, user_id = identify_user(use_camera=True)
-        if not success or not user_id:
-            user_id = "Ahmed"  # Fallback to default user
-    except Exception as e:
-        print(f"Error identifying user: {str(e)}")
-        user_id = "Ahmed"  # Fallback to default user
-        
-    print(f"Updating data for user: {user_id}")
-    update_customer_data(user_id, new_data)
+    print(f"Updating data for user: {get_user_id()}")
+    update_customer_data(get_user_id(), new_data)
 
     return jsonify({"success": "1"})
 
@@ -672,7 +616,7 @@ def get_memories(chat_session_id):
     print(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_identified_user_profile(use_camera=True))}"})
+    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_customer_profile(get_user_id()))}"})
 
 # Add an endpoint to retrieve the audio files
 @app.route("/samples/<filename>", methods=["GET"])
@@ -713,4 +657,4 @@ def get_audio_sample(filename):
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=8098)
