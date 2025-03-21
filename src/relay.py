@@ -28,6 +28,7 @@ from audio_processing.preprocess import (
 
 from memory_module.summarize import summarize_conversation
 from memory_module.db import get_customer_profile, update_customer_data
+from memory_module.user_identification import get_identified_user_profile, identify_user
 from memory_module.recommender import recommend
 
 load_dotenv()
@@ -598,9 +599,28 @@ def set_memories(chat_session_id):
     speaker_chats = [item for item in chat_history if item['type'] == 0]
     last_message = speaker_chats[-1]['text']
     print(f"[SET MEMORIES] Last message is: {last_message}")
-    customer_data = get_customer_profile('Ahmed')
+    
+    # Use face recognition to identify the user instead of hardcoded 'Ahmed'
+    print("Identifying user via face recognition...")
+    customer_data = get_identified_user_profile(use_camera=True)
+    
+    # Process the conversation and update customer data
     new_data = summarize_conversation(last_message, customer_data)
-    update_customer_data('Ahmed', new_data)
+    
+    # From our implementation, get_identified_user_profile has already determined 
+    # the user ID and used it to query the database
+    # We need to identify the user again to get the ID for updating data
+    # But we'll add error handling to ensure we don't crash
+    try:
+        success, user_id = identify_user(use_camera=True)
+        if not success or not user_id:
+            user_id = "Ahmed"  # Fallback to default user
+    except Exception as e:
+        print(f"Error identifying user: {str(e)}")
+        user_id = "Ahmed"  # Fallback to default user
+        
+    print(f"Updating data for user: {user_id}")
+    update_customer_data(user_id, new_data)
 
     return jsonify({"success": "1"})
 
@@ -635,7 +655,7 @@ def get_memories(chat_session_id):
     print(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_customer_profile('Ahmed'))}"})
+    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_identified_user_profile(use_camera=True))}"})
 
 # Add an endpoint to retrieve the audio files
 @app.route("/samples/<filename>", methods=["GET"])
