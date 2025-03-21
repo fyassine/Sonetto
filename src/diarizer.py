@@ -59,6 +59,7 @@ def transcribe_all_speakers(audio_file_path):
         print("Using REST API for speech recognition...")
         with open(audio_file_path, 'rb') as audio_file:
             audio_data = audio_file.read()
+            print(f"Audio file size: {len(audio_data)} bytes")
         
         # REST API endpoint and headers
         endpoint = f"https://{AZURE_SPEECH_REGION}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
@@ -72,24 +73,37 @@ def transcribe_all_speakers(audio_file_path):
         }
         
         # Send POST request to REST API
+        print(f"Sending request to Azure Speech API: {endpoint}")
         response = requests.post(endpoint, headers=headers, params=params, data=audio_data)
-        response.raise_for_status()
-        result = response.json()
+        print(f"Response status code: {response.status_code}")
         
-        # Extract recognized text
-        if "DisplayText" in result:
-            recognized_text = result["DisplayText"]
-            print(f"REST API recognized: {recognized_text}")
-            speaker_transcriptions["speaker_1"] = [recognized_text]
+        # Check if the request was successful
+        if response.status_code == 200:
+            try:
+                result = response.json()
+                print(f"Full API response: {result}")
+                
+                # Extract recognized text
+                if "DisplayText" in result and result["DisplayText"].strip():
+                    recognized_text = result["DisplayText"]
+                    print(f"REST API recognized: {recognized_text}")
+                    speaker_transcriptions["speaker_1"] = [recognized_text]
+                else:
+                    print("REST API returned empty or no recognized text.")
+                    # Use a placeholder message instead of empty string
+                    speaker_transcriptions["speaker_1"] = ["No speech detected"]
+            except json.JSONDecodeError:
+                print(f"Failed to parse JSON response: {response.text}")
+                speaker_transcriptions["speaker_1"] = ["Error parsing response"]
         else:
-            print("REST API did not return recognized text.")
-            speaker_transcriptions["speaker_1"] = [""]
+            print(f"API request failed with status code {response.status_code}: {response.text}")
+            speaker_transcriptions["speaker_1"] = [f"API Error: {response.status_code}"]
         
         return speaker_transcriptions
 
     except Exception as e:
         print(f"Error during speech recognition: {str(e)}")
-        # Return an empty dictionary instead of a Flask response
+        # Return a dictionary with an error message
         return {"speaker_1": [f"Error: {str(e)}"]}
 
 def pick_relevant_speaker(audio_file_path, session_id=None):
@@ -107,7 +121,9 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     from relay import sessions
     
     # Get speaker transcriptions using Azure Speech SDK
+    print(f"Starting transcription of audio file: {audio_file_path}")
     speaker_transcriptions = transcribe_all_speakers(audio_file_path)
+    print(f"Raw transcription results: {speaker_transcriptions}")
         
     # Format results and identify the relevant speaker
     diarized_text = []
@@ -116,6 +132,9 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     # Analyze each speaker's text to find the most relevant one
     for speaker_id, texts in speaker_transcriptions.items():
         combined_text = " ".join(texts)
+        print(f"Speaker {speaker_id} raw texts: {texts}")
+        print(f"Speaker {speaker_id} combined text: '{combined_text}'")
+        print(f"Is text empty? {not combined_text or combined_text.strip() == ''}")
         
         # Skip empty text
         if not combined_text or combined_text.strip() == "":
@@ -186,11 +205,34 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
     
     # If no relevant speaker was found but we have speakers with non-empty text, use the first one with non-empty text
     if not relevant_speaker and diarized_text:
+        print(f"Looking for speakers with non-empty text among {len(diarized_text)} speakers")
         for speaker in diarized_text:
-            if speaker["text"] and speaker["text"].strip() != "":
+            print(f"Checking speaker {speaker['speaker_id']}, text: '{speaker['text']}'")
+            text = speaker['text']
+            
+            # Check if text exists, is not empty, and is not our placeholder
+            has_valid_text = (
+                bool(text) and 
+                text.strip() != "" and 
+                text != "No speech detected" and
+                not text.startswith("Error:") and
+                not text.startswith("API Error:")
+            )
+            
+            print(f"Text evaluation: has valid text? {has_valid_text}")
+            
+            if has_valid_text:
+                print(f"Speaker text: {speaker['text']}")
                 relevant_speaker = speaker
                 print(f"No ordering speaker found, using speaker with non-empty text: {speaker['speaker_id']}")
                 break
+        
+        # If we don't find any speaker with valid text, use the first one anyway
+        if not relevant_speaker:
+            print("No speakers with valid text were found, using first speaker anyway")
+            relevant_speaker = diarized_text[0]
+            print(f"Using speaker: {relevant_speaker['speaker_id']} with text: '{relevant_speaker['text']}'")
+            return relevant_speaker
     
     # If still no relevant speaker, use the first one regardless of text
     if not relevant_speaker and diarized_text:
